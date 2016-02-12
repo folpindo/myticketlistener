@@ -22,6 +22,14 @@ On trac.ini, just insert the following lines:
 
 [ticketchangetoinfluxdb]
 
+;Connection parameters for influxdb
+
+host = localhost
+port = 8086
+user =
+user_pwd =
+database = trac_ecom
+
 ;ticket_fields will be deprecated. Please use monitored_fields instead.
 
 ticket_fields = dev_loe, qa_loe, consumed_hours, qa_assigned, dev_assigned, ticket_progress, hours, status
