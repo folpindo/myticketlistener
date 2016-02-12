@@ -145,11 +145,19 @@ class TicketchangeToInfluxdb(Component):
             self.log.debug("Unable to find Ticket Change to Influxdb Section")
 
         return ticket_fields
+    
+    def check_database(self):
+        pass
+    
+    def create_database(self,database):
+        pass
 
     def ticket_changed(self,ticket,comment,author,old_values):
+        
         ticket_id = ticket.id
         config = self.config
         parser = config.parser
+        
         infdb_item = InfluxdbItem()
         infdb_item.set_config(config)
         infdb_item.set_ticket(ticket)
@@ -157,19 +165,49 @@ class TicketchangeToInfluxdb(Component):
         infdb_item.set_author(author)
         infdb_item.set_old_values(old_values)
         infdb_item.set_log(self.log)
+        
         monitored_fields_changed = False
         monitored_fields_changed = infdb_item.is_change_valid()
+        
         data = []
         database = None
         
         if monitored_fields_changed:
+            
             data = self.get_data(ticket,comment,author,old_values)
+            
+            # Default influxdb connection parameters below
+            host = "localhost"
+            port = 8086
+            database = "trac_sample"
+            influxdb_user = ""
+            influxdb_user_pwd = ""
+                       
+            # Override default configurations
+            if parser.has_section('ticketchangetoinfluxdb'):        
+                if config.has_option('ticketchangetoinfluxdb','host'):
+                    host = config.get('ticketchangetoinfluxdb','host')
+            
+            if parser.has_section('ticketchangetoinfluxdb'):        
+                if config.has_option('ticketchangetoinfluxdb','port'):
+                    port = config.get('ticketchangetoinfluxdb','port')
+                    
             if parser.has_section('ticketchangetoinfluxdb'):        
                 if config.has_option('ticketchangetoinfluxdb','database'):
                     database = config.get('ticketchangetoinfluxdb','database')
+                    
+            if parser.has_section('ticketchangetoinfluxdb'):        
+                if config.has_option('ticketchangetoinfluxdb','user'):
+                    influxdb_user = config.get('ticketchangetoinfluxdb','user')
+                    
+            if parser.has_section('ticketchangetoinfluxdb'):        
+                if config.has_option('ticketchangetoinfluxdb','user_pwd'):
+                    influxdb_user_pwd = config.get('ticketchangetoinfluxdb','user_pwd')                    
+                    
             if database is not None:
-                client = InfluxDBClient('localhost', 8086, '', '', database)
+                client = InfluxDBClient(host, port, influxdb_user, influxdb_user_pwd, database)
                 client.write_points(data)
+                
               
     def ticket_deleted(self,ticket):
         pass
