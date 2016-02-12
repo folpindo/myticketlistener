@@ -5,7 +5,7 @@
 
 If there is changes on the following fields, the changes along with some details will be pushed to influxdb.
 
-    Custom Fields
+    Custom Fields (This should be set as monitored_fields in the trac configuration.)
         1. dev_loe
         1. qa_loe
         1. consumed_hours
@@ -21,10 +21,27 @@ If there is changes on the following fields, the changes along with some details
 On trac.ini, just insert the following lines:
 
 [ticketchangetoinfluxdb]
+
+;ticket_fields will be deprecated. Please use monitored_fields instead.
+
 ticket_fields = dev_loe, qa_loe, consumed_hours, qa_assigned, dev_assigned, ticket_progress, hours, status
+
+;Changes in the following fields will trigger push to influxdb. Specific change to be pushed
+;is only for the one with mapping between custom field and measurement.
+
+monitored_fields = dev_loe, qa_loe, consumed_hours, qa_assigned, dev_assigned, ticket_progress, hours, status
+
+;The database name in influx
 database = sample
+
+;Mapping of intended custom field to influxdb "measurement".
 dev_loe = DevLOE
 qa_loe = QALOE
+
+;Configuration of the tags that will be pushed along with the measurement.
+universal_tags = ticket_id|id,ticket_status|status,dev_assigned|owner,ticket_qa_assigned|qa_asigned
+
+;Removed ticket_change_author because the author is not included in the field.
 
 """
 
@@ -59,37 +76,56 @@ class TicketchangeToInfluxdb(Component):
 
     def ticket_created(self,ticket):
         pass
+    
+    def get_tags(self):
         
-    def get_json_body(self,ticket,comment,author,old_values):
+        config = self.config
+        parser = config.parser
+        tags = None
+        
+        if parser.has_section('ticketchangetoinfluxdb'):
+            if config.has_option('ticketchangetoinfluxdb',"universal_tags"):
+                tags = config.get('ticketchangetoinfluxdb',"universal_tags")
+        
+        return tags
+        
+    def get_data(self,ticket,comment,author,old_values):
         
         config = self.config
         parser = config.parser
         measurement = None
         influxdata = []
         monitored_fields = self.get_monitored_fields()
+        universal_tags = self.get_tags()
+        tags = []
                
         for field_key in old_values.keys():
+            
             if field_key in monitored_fields:
+                
                 if parser.has_section('ticketchangetoinfluxdb'):
                     if config.has_option('ticketchangetoinfluxdb',field_key):
                         measurement = config.get('ticketchangetoinfluxdb',field_key)
+                        
+                tags_kvstr = [tag.strip() for tag in universal_tags.split(",")]
+                tags = {}
                 
+                for tags_kv in tags_kvstr:
+                    k,v = tags_kv.split("|")
+                    tags[k.strip()] = ticket.get_value_or_default(v.strip())
+                    
+                #author is not on the ticket fields
+                tags["ticket_change_author"] = author
+                                   
                 raw = {
                     "measurement": measurement,
-                    "tags": {
-                        "ticket_id": ticket.id,
-                        "ticket_status":ticket.get_value_or_default("status"),
-                        "dev_assigned": ticket.get_value_or_default("owner"),
-                        "ticket_milestone":ticket.get_value_or_default("milestone"),
-                        "ticket_qa_assigned":ticket.get_value_or_default("milestone"),
-                        "ticket_change_author": author
-                    },
+                    "tags": tags,
                     "time": ticket.get_value_or_default("changetime"),
                     "fields": {
                         "value": ticket.get_value_or_default(field_key)
                     }
                 }
-                
+               
                 influxdata.append(raw)
                 
         return influxdata
@@ -102,8 +138,8 @@ class TicketchangeToInfluxdb(Component):
 
         if parser.has_section('ticketchangetoinfluxdb'):
             self.log.debug("Found Ticket Change To Influxdb Section")
-            if config.has_option('ticketchangetoinfluxdb','ticket_fields'):
-                ticket_fields_str = config.get('ticketchangetoinfluxdb','ticket_fields')
+            if config.has_option('ticketchangetoinfluxdb','monitored_fields'):
+                ticket_fields_str = config.get('ticketchangetoinfluxdb','monitored_fields')
                 ticket_fields = [field.strip() for field in ticket_fields_str.split(',')]
         else:
             self.log.debug("Unable to find Ticket Change to Influxdb Section")
@@ -127,7 +163,7 @@ class TicketchangeToInfluxdb(Component):
         database = None
         
         if monitored_fields_changed:
-            data = self.get_json_body(ticket,comment,author,old_values)
+            data = self.get_data(ticket,comment,author,old_values)
             if parser.has_section('ticketchangetoinfluxdb'):        
                 if config.has_option('ticketchangetoinfluxdb','database'):
                     database = config.get('ticketchangetoinfluxdb','database')
