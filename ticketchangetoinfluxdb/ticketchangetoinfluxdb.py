@@ -22,6 +22,17 @@ On trac.ini, just insert the following lines:
 
 [ticketchangetoinfluxdb]
 
+;Rest API settings
+
+direct= 0
+api = 1
+
+url = http://bteves.lion.perfectfitgroup.local
+service_version = v1
+service_name = Ordermetrics
+method = getMethod
+
+
 ;Connection parameters for influxdb
 
 host = localhost
@@ -30,26 +41,13 @@ user =
 user_pwd =
 database = trac_ecom
 
-;ticket_fields will be deprecated. Please use monitored_fields instead.
 
 ticket_fields = dev_loe, qa_loe, consumed_hours, qa_assigned, dev_assigned, ticket_progress, hours, status
-
-;Changes in the following fields will trigger push to influxdb. Specific change to be pushed
-;is only for the one with mapping between custom field and measurement.
-
 monitored_fields = dev_loe, qa_loe, consumed_hours, qa_assigned, dev_assigned, ticket_progress, hours, status
-
-;The database name in influx
 database = sample
-
-;Mapping of intended custom field to influxdb "measurement".
 dev_loe = DevLOE
 qa_loe = QALOE
-
-;Configuration of the tags that will be pushed along with the measurement.
 universal_tags = ticket_id|id,ticket_status|status,dev_assigned|owner,ticket_qa_assigned|qa_asigned
-
-;Removed ticket_change_author because the author is not included in the field.
 
 """
 
@@ -84,60 +82,77 @@ class TicketchangeToInfluxdb(Component):
 
     def ticket_created(self,ticket):
         pass
+           
+    """
+    Build the data to be pushed to influxdb.
+    """
+    def get_data(self,ticket,author):
+        
+        config = self.config
+        parser = config.parser
+        
+        measurement = None
+        influxdata = []
+        tags = {}
+        fields_key_values = {}
+        
+        monitored_fields = self.get_monitored_fields() # get the list of monitored fields
+        fields = self.get_fields() # get the list of fields to be pushed to influxdb
+        universal_tags = self.get_tags() # get the list of field that are to be tagged
+
+        """
+        Extract trac field value with key to be used in influxdb for the fields.
+        """
+        for field in fields:
+            k,v = field.split("|")
+            if v == 'author':
+                fields_key_values['author'] = author
+            else:
+                fields_key_values[k.strip()] = ticket.get_value_or_default(v.strip())
+               
+        """
+        Extract trac field value with key to be used in influxdb for the tags.
+        """
+        for tags_kv in universal_tags:
+            k,v = tags_kv.split("|")
+            tags[k.strip()] = ticket.get_value_or_default(v.strip())
+            
+        """
+        We have now set the measurement name.
+        The field=measurement in configuration will not work with this version.
+        """
+        if parser.has_section('ticketchangetoinfluxdb'):
+            if config.has_option('ticketchangetoinfluxdb','measurement'):
+                measurement_str = config.get('ticketchangetoinfluxdb','measurement')
+                measurement = measurement_str.strip()
+                
+        influxdata =  {
+            "measurement": measurement,
+            "tags": tags,
+            "time": ticket.get_value_or_default("changetime"),
+            "fields": fields_key_values  
+        }
+        
+        return [influxdata]
+    
     
     def get_tags(self):
         
         config = self.config
         parser = config.parser
-        tags = None
+        tags = []
         
         if parser.has_section('ticketchangetoinfluxdb'):
             if config.has_option('ticketchangetoinfluxdb',"universal_tags"):
-                tags = config.get('ticketchangetoinfluxdb',"universal_tags")
-        
+                tags_str = config.get('ticketchangetoinfluxdb',"universal_tags")
+                tags = [field.strip() for field in tags_str.split(',')]
+                
         return tags
-        
-    def get_data(self,ticket,comment,author,old_values):
-        
-        config = self.config
-        parser = config.parser
-        measurement = None
-        influxdata = []
-        monitored_fields = self.get_monitored_fields()
-        universal_tags = self.get_tags()
-        tags = []
-               
-        for field_key in old_values.keys():
-            
-            if field_key in monitored_fields:
-                
-                if parser.has_section('ticketchangetoinfluxdb'):
-                    if config.has_option('ticketchangetoinfluxdb',field_key):
-                        measurement = config.get('ticketchangetoinfluxdb',field_key)
-                        
-                tags_kvstr = [tag.strip() for tag in universal_tags.split(",")]
-                tags = {}
-                
-                for tags_kv in tags_kvstr:
-                    k,v = tags_kv.split("|")
-                    tags[k.strip()] = ticket.get_value_or_default(v.strip())
-                    
-                #author is not on the ticket fields
-                tags["ticket_change_author"] = author
-                                   
-                raw = {
-                    "measurement": measurement,
-                    "tags": tags,
-                    "time": ticket.get_value_or_default("changetime"),
-                    "fields": {
-                        "value": ticket.get_value_or_default(field_key)
-                    }
-                }
-               
-                influxdata.append(raw)
-                
-        return influxdata
     
+    """
+    Get the list of monitored fields
+    
+    """
     def get_monitored_fields(self):
         config = self.config
         parser = config.parser
@@ -154,10 +169,31 @@ class TicketchangeToInfluxdb(Component):
 
         return ticket_fields
     
+    """
+    Get the list to be set on the fields on influxdb.
+    """
+    def get_fields(self):
+        config = self.config
+        parser = config.parser
+        fields = []
+
+        if parser.has_section('ticketchangetoinfluxdb'):
+            if config.has_option('ticketchangetoinfluxdb','fields'):
+                fields_str = config.get('ticketchangetoinfluxdb','fields')
+                fields = [field.strip() for field in fields_str.split(',')]
+
+        return fields
+    
     def check_database(self):
         pass
     
     def create_database(self,database):
+        pass
+    
+    def get_mode(self):
+        pass
+    
+    def call_api(self):
         pass
 
     def ticket_changed(self,ticket,comment,author,old_values):
@@ -176,13 +212,17 @@ class TicketchangeToInfluxdb(Component):
         
         monitored_fields_changed = False
         monitored_fields_changed = infdb_item.is_change_valid()
-        
+        self.log.debug("Chage valid:")
+        self.log.debug(monitored_fields_changed)
         data = []
         database = None
         
         if monitored_fields_changed:
             
-            data = self.get_data(ticket,comment,author,old_values)
+            data = self.get_data(ticket,author)
+            
+            self.log.debug("Influxdb data:")
+            self.log.debug(data)
             
             # Default influxdb connection parameters below
             host = "localhost"
